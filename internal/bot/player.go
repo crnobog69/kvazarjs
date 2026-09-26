@@ -397,10 +397,16 @@ func buildFFMpegArgs(track *media.Track) []string {
 		args = append(args, "-headers", headerLines)
 	}
 
+	vol := os.Getenv("KVZ_VOLUME")
+	if vol == "" {
+		vol = "0.5"
+	}
+	afFilter := fmt.Sprintf("loudnorm=I=-16:LRA=11:TP=-1.5,volume=%s", vol)
+
 	args = append(args,
 		"-i", track.StreamURL,
 		"-vn",
-		"-af", "loudnorm=I=-16:LRA=11:TP=-1.5", // Audio normalization for better quality
+		"-af", afFilter, // Audio normalization & volume adjustment
 		"-f", "s16le",
 		"-ac", fmt.Sprintf("%d", pcmChannelCount),
 		"-ar", fmt.Sprintf("%d", sampleRate),

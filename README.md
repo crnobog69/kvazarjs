@@ -36,6 +36,7 @@ Kvazar is configured using environment variables:
 | `KVZ_FFMPEG_PATH`     | Optional explicit path to the `ffmpeg` binary                  |
 | `KVZ_YTDLP_PATH`      | Optional explicit path to the `yt-dlp` binary                  |
 | `KVZ_STATUS`          | Optional custom status shown as "Listening to ..."            |
+| `KVZ_VOLUME`          | Stream audio volume multiplier (default: `0.5` for 50%)        |
 
 ## Slash Commands
 

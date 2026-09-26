@@ -24,10 +24,13 @@ export function createStream(
     args.push('-headers', headersStr + '\r\n');
   }
 
+  const volume = process.env.KVZ_VOLUME || '0.5';
+
   args.push(
     '-i', track.streamUrl,
     '-analyzeduration', '0',
     '-loglevel', 'warning',
+    '-filter:a', `volume=${volume}`,
     '-c:a', 'libopus',
     '-b:a', '128k',
     '-ar', '48000',
