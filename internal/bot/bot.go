@@ -9,7 +9,7 @@ import (
     "sync"
     "time"
 
-    "github.com/bwmarrin/discordgo"
+    "github.com/cartridge-gg/discordgo"
 
     "kvazar/internal/media"
 )
@@ -305,7 +305,7 @@ func (k *Kvazar) handlePlayer(ic *discordgo.InteractionCreate) {
 					Label:    "Пауза",
 					Style:    discordgo.SecondaryButton,
 					CustomID: "pause_button",
-					Emoji: discordgo.ComponentEmoji{
+					Emoji: &discordgo.ComponentEmoji{
 						Name: "⏸️",
 					},
 				},
@@ -313,7 +313,7 @@ func (k *Kvazar) handlePlayer(ic *discordgo.InteractionCreate) {
 					Label:    "Заустави",
 					Style:    discordgo.DangerButton,
 					CustomID: "stop_button",
-					Emoji: discordgo.ComponentEmoji{
+					Emoji: &discordgo.ComponentEmoji{
 						Name: "⏹️",
 					},
 				},
@@ -321,7 +321,7 @@ func (k *Kvazar) handlePlayer(ic *discordgo.InteractionCreate) {
 					Label:    "Прескочи",
 					Style:    discordgo.PrimaryButton,
 					CustomID: "skip_button",
-					Emoji: discordgo.ComponentEmoji{
+					Emoji: &discordgo.ComponentEmoji{
 						Name: "⏭️",
 					},
 				},
@@ -329,7 +329,7 @@ func (k *Kvazar) handlePlayer(ic *discordgo.InteractionCreate) {
 					Label:    loopLabel,
 					Style:    loopStyle,
 					CustomID: "loop_button",
-					Emoji: discordgo.ComponentEmoji{
+					Emoji: &discordgo.ComponentEmoji{
 						Name: "🔁",
 					},
 				},
@@ -468,7 +468,7 @@ func (k *Kvazar) announceNowPlaying(track *media.Track, loop bool) {
                     Label:    "Пауза",
                     Style:    discordgo.SecondaryButton,
                     CustomID: "pause_button",
-                    Emoji: discordgo.ComponentEmoji{
+                    Emoji: &discordgo.ComponentEmoji{
                         Name: "⏸️",
                     },
                 },
@@ -476,7 +476,7 @@ func (k *Kvazar) announceNowPlaying(track *media.Track, loop bool) {
                     Label:    "Заустави",
                     Style:    discordgo.DangerButton,
                     CustomID: "stop_button",
-                    Emoji: discordgo.ComponentEmoji{
+                    Emoji: &discordgo.ComponentEmoji{
                         Name: "⏹️",
                     },
                 },
@@ -484,7 +484,7 @@ func (k *Kvazar) announceNowPlaying(track *media.Track, loop bool) {
                     Label:    "Прескочи",
                     Style:    discordgo.PrimaryButton,
                     CustomID: "skip_button",
-                    Emoji: discordgo.ComponentEmoji{
+                    Emoji: &discordgo.ComponentEmoji{
                         Name: "⏭️",
                     },
                 },
@@ -492,7 +492,7 @@ func (k *Kvazar) announceNowPlaying(track *media.Track, loop bool) {
                     Label:    loopLabel,
                     Style:    loopStyle,
                     CustomID: "loop_button",
-                    Emoji: discordgo.ComponentEmoji{
+                    Emoji: &discordgo.ComponentEmoji{
                         Name: "🔁",
                     },
                 },

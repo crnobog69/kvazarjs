@@ -2,6 +2,10 @@
 
 This is a fork of [winterdemise/kvazar](https://github.com/wintersdemise/kvazar)
 
+```txt
+https://discord.com/oauth2/authorize?client_id=1439677033134162191&permissions=282026916826368&integration_type=0&scope=bot+applications.commands
+```
+
 Kvazar is a lightweight Discord music bot written in Go. It focuses on fast response times, a minimal player aesthetic, and first-class support for YouTube and SoundCloud audio sources.
 
 ## Features
@@ -81,20 +85,21 @@ The Docker image includes all required dependencies (ffmpeg and yt-dlp) pre-inst
 
 1. Ensure dependencies are installed:
 
+   - [Bun](https://bun.sh/) (`bun --version`)
+   - `ffmpeg` & `yt-dlp`
+
+2. Install dependencies:
+
    ```bash
-   which ffmpeg yt-dlp
+   bun install
    ```
 
-2. Export your token:
+3. Export or configure your `.env` with `KVZ_DISCORD_TOKEN`.
+
+4. Start the bot:
 
    ```bash
-   export KVZ_DISCORD_TOKEN=your_token_here
-   ```
-
-3. Start the bot:
-
-   ```bash
-   go run ./cmd/kvazar
+   bun start
    ```
 
 4. Invite the bot to your server with the `applications.commands` and `bot` scopes, granting it permission to connect and speak in voice channels.

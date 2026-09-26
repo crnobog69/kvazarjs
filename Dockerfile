@@ -1,49 +1,22 @@
-# Build stage
-FROM golang:1.21-alpine AS builder
+FROM oven/bun:alpine
 
-# Install build dependencies
-RUN apk add --no-cache \
-    git \
-    gcc \
-    musl-dev \
-    opus-dev
-
-WORKDIR /build
-
-# Copy go mod files and source
-COPY go.mod ./
-COPY . .
-
-# Generate go.sum and download dependencies
-RUN go mod tidy && go mod download
-
-# Build the application
-RUN CGO_ENABLED=1 GOOS=linux go build -a -o kvazar ./cmd/kvazar
-
-# Runtime stage
-FROM alpine:latest
-
-# Install runtime dependencies (ffmpeg, yt-dlp, and opus)
+# Install runtime dependencies (ffmpeg and yt-dlp)
 RUN apk add --no-cache \
     ffmpeg \
-    opus \
     python3 \
     py3-pip \
     && pip3 install --no-cache-dir --break-system-packages yt-dlp
 
-# Create non-root user
-RUN addgroup -S kvazar && adduser -S kvazar -G kvazar
-
 WORKDIR /app
 
-# Copy binary from builder
-COPY --from=builder /build/kvazar .
+# Copy package manifests and install dependencies
+COPY package.json bun.lock* ./
+RUN bun install --frozen-lockfile || bun install
 
-# Change ownership
-RUN chown -R kvazar:kvazar /app
+# Copy source code
+COPY . .
 
-# Switch to non-root user
-USER kvazar
+# Run as non-root
+USER bun
 
-# Run the bot
-CMD ["./kvazar"]
+CMD ["bun", "run", "src/index.ts"]

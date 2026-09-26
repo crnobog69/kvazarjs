@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
+	"github.com/cartridge-gg/discordgo"
 	"layeh.com/gopus"
 
 	"kvazar/internal/media"
@@ -242,6 +242,19 @@ func (p *Player) streamTrack(ctx context.Context, track *media.Track) error {
 		return errors.New("voice connection not established")
 	}
 
+	// Wait for voice connection to be ready if it isn't yet
+	for i := 0; i < 50; i++ {
+		vc.RLock()
+		ready := vc.Ready
+		vc.RUnlock()
+		if ready {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	log.Printf("[Player] Starting stream for %q (URL: %s)", track.Title, track.StreamURL)
+
 	opusEncoder, err := gopus.NewEncoder(sampleRate, pcmChannelCount, gopus.Audio)
 	if err != nil {
 		return fmt.Errorf("opus encoder: %w", err)
@@ -283,6 +296,9 @@ func (p *Player) streamTrack(ctx context.Context, track *media.Track) error {
 		}
 	}()
 
+	var framesSent int64
+	startTime := time.Now()
+
 	for {
 		if ctx.Err() != nil {
 			return context.Canceled
@@ -310,9 +326,14 @@ func (p *Player) streamTrack(ctx context.Context, track *media.Track) error {
 
 		if _, err := io.ReadFull(reader, byteBuf); err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if framesSent == 0 {
+					log.Printf("[Player] WARNING: FFmpeg ended with 0 audio frames! Stderr: %s", strings.TrimSpace(stderr.String()))
+				} else {
+					log.Printf("[Player] Finished streaming %q (%d frames sent in %s)", track.Title, framesSent, time.Since(startTime).Truncate(time.Second))
+				}
 				return nil
 			}
-			return fmt.Errorf("pcm read: %w", err)
+			return fmt.Errorf("pcm read error after %d frames (stderr: %s): %w", framesSent, strings.TrimSpace(stderr.String()), err)
 		}
 
 		for i := 0; i < len(pcmBuf); i++ {
@@ -321,6 +342,7 @@ func (p *Player) streamTrack(ctx context.Context, track *media.Track) error {
 
 		packet, err := opusEncoder.Encode(pcmBuf, pcmFrameSize, opusFrameCapacity)
 		if err != nil {
+			log.Printf("[Player] Opus encode error: %v", err)
 			return fmt.Errorf("opus encode: %w", err)
 		}
 
@@ -328,6 +350,11 @@ func (p *Player) streamTrack(ctx context.Context, track *media.Track) error {
 		case <-ctx.Done():
 			return context.Canceled
 		case vc.OpusSend <- packet:
+		}
+
+		framesSent++
+		if framesSent%500 == 0 { // ~10 seconds of audio
+			log.Printf("[Player] Playing %q: %d frames sent (%s elapsed)", track.Title, framesSent, time.Since(startTime).Truncate(time.Second))
 		}
 	}
 }

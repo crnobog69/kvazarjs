@@ -1,6 +1,6 @@
 package bot
 
-import "github.com/bwmarrin/discordgo"
+import "github.com/cartridge-gg/discordgo"
 
 const (
 	commandPlay   = "play"

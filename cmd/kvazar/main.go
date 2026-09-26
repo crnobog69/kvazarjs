@@ -10,10 +10,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"kvazar/internal/bot"
 )
 
 func main() {
+	// Load .env file if present (silently ignore if missing)
+	_ = godotenv.Load()
+
 	cfg := bot.Config{
 		Token:      pickToken(),
 		FFMpegPath: os.Getenv("KVZ_FFMPEG_PATH"),
