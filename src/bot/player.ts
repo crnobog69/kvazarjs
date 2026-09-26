@@ -157,10 +157,10 @@ export class GuildPlayer {
 
     try {
       const channel = await this.resolveChannel(track.requestChannelId);
-      if (channel && channel.isTextBased()) {
+      if (channel && channel.isTextBased() && 'send' in channel) {
         const embed = buildNowPlayingEmbed(track, this.loop);
         const components = [buildControlRow(this.loop, false)];
-        await channel.send({ embeds: [embed], components });
+        await (channel as any).send({ embeds: [embed], components });
       }
     } catch (err) {
       console.warn(`[GuildPlayer:${this.guildId}] Could not send now playing card:`, err);

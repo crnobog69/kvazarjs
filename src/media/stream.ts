@@ -39,22 +39,22 @@ export function createStream(
     'pipe:1'
   );
 
-  const process = spawn(ffmpegPath, args, {
+  const child = spawn(ffmpegPath, args, {
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  process.stderr?.on('data', (d) => {
+  child.stderr?.on('data', (d) => {
     const msg = d.toString().trim();
     if (msg) {
       // ffmpeg warnings/errors
     }
   });
 
-  const resource = createAudioResource(process.stdout, {
+  const resource = createAudioResource(child.stdout, {
     inputType: StreamType.OggOpus,
     inlineVolume: false,
   });
 
-  return { resource, process };
+  return { resource, process: child };
 }

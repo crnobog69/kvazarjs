@@ -4,9 +4,9 @@ import {
   Events,
   GatewayIntentBits,
   GuildMember,
-  Interaction,
   MessageFlags,
   type ApplicationCommandDataResolvable,
+  type Interaction,
 } from 'discord.js';
 import { Resolver } from '../media/resolver';
 import { slashCommands } from './commands';
