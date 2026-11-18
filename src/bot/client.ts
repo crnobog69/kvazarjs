@@ -3,9 +3,9 @@ import {
   Client,
   Events,
   GatewayIntentBits,
-  GuildMember,
   MessageFlags,
   type ApplicationCommandDataResolvable,
+  type ChatInputCommandInteraction,
   type Interaction,
 } from 'discord.js';
 import { Resolver } from '../media/resolver';
@@ -37,26 +37,25 @@ export class KvazarBot {
       ],
     });
 
-    (globalThis as any).kvazarClient = this.client;
-
     this.setupListeners();
   }
 
   private setupListeners(): void {
+    this.client.on(Events.Error, error => console.error('Грешка Discord клијента:', error));
+    this.client.on(Events.ShardError, (error, shard) => console.warn(`Discord gateway (${shard}):`, error));
+    this.client.on(Events.GuildDelete, guild => {
+      this.players.get(guild.id)?.destroy();
+      this.players.delete(guild.id);
+    });
+
     this.client.once(Events.ClientReady, async () => {
       console.log(`🌌 Kvazar povezan kao ${this.client.user?.tag}!`);
 
-      this.client.user?.setPresence({
-        status: 'dnd',
-        activities: [
-          {
-            name: this.config.status || '/play',
-            type: ActivityType.Listening,
-          },
-        ],
-      });
-
       try {
+        this.client.user?.setPresence({
+          status: 'dnd',
+          activities: [{ name: this.config.status || '/play', type: ActivityType.Listening }],
+        });
         console.log('Registrujem slash komande...');
         await this.client.application?.commands.set(
           slashCommands as ApplicationCommandDataResolvable[]
@@ -91,7 +90,7 @@ export class KvazarBot {
   private getPlayer(guildId: string): GuildPlayer {
     let player = this.players.get(guildId);
     if (!player) {
-      player = new GuildPlayer(guildId);
+      player = new GuildPlayer(guildId, this.client, this.config.ffmpegPath);
       this.players.set(guildId, player);
     }
     return player;
@@ -128,11 +127,11 @@ export class KvazarBot {
     }
   }
 
-  private async handlePlay(interaction: any): Promise<void> {
-    const member = interaction.member as GuildMember;
-    const voiceChannel = member?.voice?.channel;
+  private async handlePlay(interaction: ChatInputCommandInteraction): Promise<void> {
+    const { guild, user } = interaction;
+    const voiceChannel = guild?.voiceStates.cache.get(user.id)?.channel;
 
-    if (!voiceChannel) {
+    if (!guild || !voiceChannel) {
       await interaction.reply({
         content: 'Мораш бити повезан на гласовни канал да би користио /play.',
         flags: MessageFlags.Ephemeral,
@@ -151,27 +150,32 @@ export class KvazarBot {
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
+    const lookup = new AbortController();
     try {
-      const player = this.getPlayer(interaction.guildId);
-      if (member.voice.channelId !== voiceChannel.id) throw new Error('Напустио си гласовни канал.');
-      const connection = await player.ensureConnected(voiceChannel);
-
-      const track = await this.resolver.resolve(
-        query,
-        `<@${interaction.user.id}>`,
-        interaction.channelId
-      );
+      const player = this.getPlayer(guild.id);
+      if (guild.voiceStates.cache.get(user.id)?.channelId !== voiceChannel.id) {
+        throw new Error('Напустио си гласовни канал.');
+      }
+      const [connection, track] = await Promise.all([
+        player.ensureConnected(voiceChannel),
+        this.resolver.resolve(query, `<@${user.id}>`, interaction.channelId, lookup.signal),
+      ]);
+      if (guild.voiceStates.cache.get(user.id)?.channelId !== voiceChannel.id) {
+        throw new Error('Напустио си гласовни канал.');
+      }
 
       const position = player.enqueue(track, connection);
       const embed = buildQueuedEmbed(track, position);
 
       await interaction.editReply({
-        content: `У реду **${track.title}** — позиција #${position}.`,
+        content: `У реду **${track.title.slice(0, 256)}** — позиција #${position}.`,
         embeds: [embed],
       });
-    } catch (err: any) {
+    } catch (err) {
+      lookup.abort();
+      const message = err instanceof Error ? err.message : 'Непозната грешка.';
       await interaction.editReply({
-        content: `Не могу да пустим песму: ${err.message || err}`,
+        content: `Не могу да пустим песму: ${message.slice(0, 400)}`,
         embeds: [],
       });
     }
@@ -317,11 +321,11 @@ export class KvazarBot {
     await this.client.login(this.config.token);
   }
 
-  public stop(): void {
+  public async stop(): Promise<void> {
     for (const player of this.players.values()) {
       player.destroy();
     }
     this.players.clear();
-    this.client.destroy();
+    await this.client.destroy();
   }
 }

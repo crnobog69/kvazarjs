@@ -1,11 +1,12 @@
 FROM oven/bun:alpine
 
-# Install runtime dependencies (ffmpeg and yt-dlp)
+# yt-dlp uses Node.js and the bundled EJS scripts to resolve YouTube streams.
 RUN apk add --no-cache \
     ffmpeg \
+    nodejs \
     python3 \
     py3-pip \
-    && pip3 install --no-cache-dir --break-system-packages yt-dlp
+    && pip3 install --no-cache-dir --break-system-packages 'yt-dlp[default]'
 
 WORKDIR /app
 

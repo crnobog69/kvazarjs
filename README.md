@@ -6,7 +6,7 @@ This is a fork of [winterdemise/kvazar](https://github.com/wintersdemise/kvazar)
 https://discord.com/oauth2/authorize?client_id=1439677033134162191&permissions=282026916826368&integration_type=0&scope=bot+applications.commands
 ```
 
-Kvazar is a lightweight Discord music bot written in Go. It focuses on fast response times, a minimal player aesthetic, and first-class support for YouTube and SoundCloud audio sources.
+Kvazar is a Discord music bot that runs on Bun and plays music from YouTube and SoundCloud.
 
 ## Features
 
@@ -22,7 +22,7 @@ Kvazar shells out to a couple of battle-tested tools for media processing:
 
 - [`ffmpeg`](https://ffmpeg.org/) available in your PATH (or specify via `KVZ_FFMPEG_PATH`)
 - [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) available in your PATH (or specify via `KVZ_YTDLP_PATH`)
-- Go 1.21 or newer
+- Node.js 22 or newer and the yt-dlp EJS package for YouTube. Install yt-dlp with its default dependencies, for example `pip install -U "yt-dlp[default]"`.
 
 Ensure these binaries are installed on the host that runs the bot.
 
@@ -46,7 +46,9 @@ Kvazar is configured using environment variables:
 | `/skip`  | —                   | Skips the current track                                                     |
 | `/loop`  | `enabled` *(bool)*  | Toggle loop (omit to toggle, provide to set explicitly)                     |
 
-When `/play` resolves a track successfully, Kvazar will queue it, inform the requester privately, and broadcast a minimalist "Now Playing" card to the invoking channel when playback starts.
+For better search matches, enter the artist and song title together. Use `sc` before the query to search SoundCloud. A direct link goes straight to that track. Kvazar checks up to five results for a text query and tries another match if it cannot open the first selected track.
+
+When `/play` resolves a track successfully, Kvazar queues it, informs the requester privately, and posts a "Now Playing" card when audio starts.
 
 ## Running with Docker (Recommended)
 
@@ -105,12 +107,13 @@ The Docker image includes all required dependencies (ffmpeg and yt-dlp) pre-inst
 
 4. Invite the bot to your server with the `applications.commands` and `bot` scopes, granting it permission to connect and speak in voice channels.
 
-Kvazar listens for `SIGINT`/`SIGTERM` and will gracefully close the Discord session on shutdown, cleaning up registered slash commands.
+Kvazar listens for `SIGINT`/`SIGTERM` and closes the voice sessions and Discord connection on shutdown.
 
 ## Deployment notes
 
 - Registering the slash commands happens globally on startup; propagation can require up to an hour for brand new bots. For development, consider configuring a test guild and adapting the command registration accordingly.
 - The bot keeps each guild player isolated. Resources are reclaimed automatically after 90 seconds of inactivity in a voice channel.
+- `GET /health` returns HTTP 200 while the Discord client is ready and HTTP 503 otherwise. Docker Compose exposes this endpoint on the host port set by `KVZ_HEALTH_PORT`.
 - Playback relies on streaming audio directly via `ffmpeg`; thus a stable network connection from the host to YouTube/SoundCloud CDNs is recommended for smooth playback.
 
 Enjoy the cosmic vibes with Kvazar! 🌌🎶

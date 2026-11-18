@@ -21,16 +21,33 @@ const bot = new KvazarBot({
 async function main() {
   console.log('🌌 Pokrećem Kvazar (Bun)...');
 
-  const shutdown = () => {
-    console.log('\n🛑 Gašenje Kvazara...');
-    bot.stop();
-    process.exit(0);
-  };
-
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
-
+  let health: ReturnType<typeof Bun.serve> | undefined;
   try {
+    health = Bun.serve({
+      hostname: '0.0.0.0',
+      port: Number(process.env.KVZ_HEALTH_PORT || '8080'),
+      fetch(request) {
+        if (new URL(request.url).pathname !== '/health') return new Response(null, { status: 404 });
+        const ready = bot.client.isReady();
+        return Response.json({ status: ready ? 'ok' : 'unavailable', service: 'kvazar' }, { status: ready ? 200 : 503 });
+      },
+    });
+
+    let stopping = false;
+    const shutdown = async () => {
+      if (stopping) return;
+      stopping = true;
+      console.log('\n🛑 Gašenje Kvazara...');
+      try {
+        await health?.stop(true);
+        await bot.stop();
+      } catch (error) {
+        console.error('Грешка при гашењу Квазара:', error);
+        process.exitCode = 1;
+      }
+    };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
     await bot.start();
   } catch (err) {
     console.error('❌ Neuspelo pokretanje bota:', err);

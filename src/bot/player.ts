@@ -8,13 +8,15 @@ import {
   type AudioPlayer,
   type VoiceConnection,
 } from '@discordjs/voice';
-import type { TextBasedChannel, VoiceBasedChannel } from 'discord.js';
+import type { Client, VoiceBasedChannel } from 'discord.js';
 import type { ChildProcess } from 'node:child_process';
 import { createStream } from '../media/stream';
 import type { Track } from '../types';
 import { buildControlRow, buildNowPlayingEmbed } from './ui';
 
 const DISCONNECT_DELAY_MS = 90_000;
+const RECONNECT_TIMEOUT_MS = 15_000;
+const PLAYBACK_START_TIMEOUT_MS = 15_000;
 
 export class GuildPlayer {
   public readonly guildId: string;
@@ -24,34 +26,39 @@ export class GuildPlayer {
   public isPaused = false;
 
   private connection: VoiceConnection | null = null;
+  private connectionLifetime: AbortController | null = null;
   private audioPlayer: AudioPlayer;
   private activeStreamProcess: ChildProcess | null = null;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private isAdvancing = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private playbackStartTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(guildId: string) {
+  constructor(guildId: string, private readonly client: Client, private readonly ffmpegPath?: string) {
     this.guildId = guildId;
 
     this.audioPlayer = createAudioPlayer({
       behaviors: {
-        noSubscriber: NoSubscriberBehavior.Play,
+        noSubscriber: NoSubscriberBehavior.Pause,
       },
     });
 
-    this.audioPlayer.on(AudioPlayerStatus.Idle, () => {
-      if (!this.connection) return;
+    this.audioPlayer.on(AudioPlayerStatus.Idle, (previous) => {
       this.cleanStreamProcess();
-      this.playNext().catch((err) => {
-        console.error(`[GuildPlayer:${this.guildId}] Error playing next track:`, err);
-      });
+      if (!this.connection) return;
+      if (previous.status !== AudioPlayerStatus.Idle && previous.resource.playbackDuration === 0) {
+        this.failCurrent(new Error('FFmpeg finished before producing audio'));
+      }
+      this.playNext();
     });
 
-    this.audioPlayer.on('error', (error) => {
-      if (!this.connection) return;
-      console.error(`[GuildPlayer:${this.guildId}] Audio player error:`, error.message);
-      // The player transitions to Idle after a resource error.
-      this.loop = false;
+    this.audioPlayer.on(AudioPlayerStatus.Playing, (previous) => {
+      this.cancelPlaybackStartTimer();
+      if (previous.status === AudioPlayerStatus.Buffering && this.current) {
+        void this.announceTrack(this.current);
+      }
     });
+
+    this.audioPlayer.on('error', (error) => this.failCurrent(error));
   }
 
   get channelId() {
@@ -59,44 +66,50 @@ export class GuildPlayer {
   }
 
   async ensureConnected(voiceChannel: VoiceBasedChannel): Promise<VoiceConnection> {
-    this.cancelDisconnectTimer();
-
-    if (this.connection && this.channelId === voiceChannel.id) {
-      return await entersState(this.connection, VoiceConnectionStatus.Ready, 20_000);
-    }
-
-    if (this.connection) {
+    let conn = this.connection;
+    if (!conn || this.channelId !== voiceChannel.id) {
       this.destroy();
-    }
-
-    const conn = joinVoiceChannel({
-      channelId: voiceChannel.id,
-      guildId: this.guildId,
-      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
-      selfDeaf: true,
-      selfMute: false,
-    });
-
-    this.connection = conn;
-    try {
-      await entersState(conn, VoiceConnectionStatus.Ready, 20_000);
-      if (this.connection !== conn) throw new Error('Veza je zatvorena.');
-      conn.subscribe(this.audioPlayer);
-
-      conn.on(VoiceConnectionStatus.Disconnected, async () => {
-        try {
-          await Promise.race([
-            entersState(conn, VoiceConnectionStatus.Signalling, 5_000),
-            entersState(conn, VoiceConnectionStatus.Connecting, 5_000),
-          ]);
-        } catch {
-          if (this.connection === conn) this.destroy();
+      const joined = joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: this.guildId,
+        adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+        selfDeaf: true,
+        selfMute: false,
+      });
+      conn = joined;
+      this.connection = joined;
+      this.connectionLifetime = new AbortController();
+      joined.on('error', error => {
+        if (this.connection === joined) console.warn(`[GuildPlayer:${this.guildId}] Voice connection:`, error);
+      });
+      joined.on('stateChange', (previous, state) => {
+        if (this.connection !== joined || previous.status === state.status) return;
+        if (state.status === VoiceConnectionStatus.Destroyed) {
+          this.destroy();
+        } else if (state.status === VoiceConnectionStatus.Ready) {
+          this.cancelReconnectTimer();
+        } else {
+          this.reconnectTimer ??= setTimeout(() => {
+            if (this.connection === joined) {
+              console.warn(`[GuildPlayer:${this.guildId}] Voice reconnection timed out`);
+              this.destroy();
+            }
+          }, RECONNECT_TIMEOUT_MS);
         }
       });
+      joined.subscribe(this.audioPlayer);
+    }
+
+    try {
+      const timeout = AbortSignal.timeout(20_000);
+      const lifetime = this.connectionLifetime?.signal;
+      await entersState(conn, VoiceConnectionStatus.Ready, lifetime ? AbortSignal.any([timeout, lifetime]) : timeout);
+      if (this.connection !== conn) throw new Error('Veza je zatvorena.');
+      if (!this.current) this.scheduleDisconnect();
       return conn;
     } catch (err) {
       if (this.connection === conn) this.destroy();
-      throw new Error(`Neuspelo povezivanje na glasovni kanal: ${(err as Error).message}`);
+      throw new Error('Не могу да се повежем на гласовни канал.', { cause: err });
     }
   }
 
@@ -106,76 +119,67 @@ export class GuildPlayer {
     this.queue.push(track);
     const position = this.queue.length;
 
-    if (!this.current && this.audioPlayer.state.status === AudioPlayerStatus.Idle) {
-      this.playNext().catch((err) => {
-        console.error(`[GuildPlayer:${this.guildId}] Play error:`, err);
-      });
-    }
+    if (this.audioPlayer.state.status === AudioPlayerStatus.Idle) this.playNext();
 
     return position;
   }
 
-  private async playNext(): Promise<void> {
-    if (this.isAdvancing) return;
-    this.isAdvancing = true;
+  private playNext(): void {
+    if (!this.connection) return;
+    if (this.loop && this.current) this.queue.push(this.current);
+    this.current = null;
+    this.isPaused = false;
 
-    try {
-      if (this.loop && this.current) {
-        this.queue.push(this.current);
-      }
-
-      if (this.queue.length === 0) {
-        this.current = null;
-        this.isPaused = false;
-        this.cleanStreamProcess();
-        this.scheduleDisconnect();
+    for (let track = this.queue.shift(); track; track = this.queue.shift()) {
+      this.current = track;
+      try {
+        const stream = createStream(track, this.ffmpegPath);
+        this.activeStreamProcess = stream.process;
+        this.audioPlayer.play(stream.resource);
+        if (this.audioPlayer.state.status === AudioPlayerStatus.Buffering) {
+          this.playbackStartTimer = setTimeout(() => {
+            if (this.activeStreamProcess !== stream.process) return;
+            this.failCurrent(new Error('Timed out while waiting for the first audio'));
+            this.audioPlayer.stop(true);
+          }, PLAYBACK_START_TIMEOUT_MS);
+        }
         return;
+      } catch (error) {
+        this.failCurrent(error);
+        this.cleanStreamProcess();
       }
-
-      const nextTrack = this.queue.shift()!;
-      this.current = nextTrack;
-      this.isPaused = false;
-      this.cancelDisconnectTimer();
-
-      this.cleanStreamProcess();
-
-      const { resource, process } = createStream(nextTrack);
-      this.activeStreamProcess = process;
-
-      this.audioPlayer.play(resource);
-
-      // Announce now playing in the request channel
-      this.announceTrack(nextTrack).catch((err) => {
-        console.error(`[GuildPlayer:${this.guildId}] Announce error:`, err);
-      });
-    } finally {
-      this.isAdvancing = false;
     }
+    this.scheduleDisconnect();
   }
 
-  private async announceTrack(track: Track): Promise<void> {
+  private failCurrent(error: unknown): void {
+    if (!this.current) return;
+    const track = this.current;
+    this.current = null;
+    this.loop = false;
+    const message = error instanceof Error ? error.message : 'Unknown playback error';
+    console.warn(`[GuildPlayer:${this.guildId}] Playback failed (${track.source}): ${message}`);
+    void this.announceTrack(track, true);
+  }
+
+  private async announceTrack(track: Track, failed = false): Promise<void> {
     if (!track.requestChannelId) return;
 
     try {
-      const channel = await this.resolveChannel(track.requestChannelId);
-      if (channel && channel.isTextBased() && 'send' in channel) {
+      const channel = this.client.channels.cache.get(track.requestChannelId);
+      if (!channel?.isSendable()) return;
+      if (failed) {
+        await channel.send({
+          content: `Не могу да пустим **${track.title.slice(0, 200)}**.`,
+          allowedMentions: { parse: [] },
+        });
+      } else {
         const embed = buildNowPlayingEmbed(track, this.loop);
         const components = [buildControlRow(this.loop, false)];
-        await (channel as any).send({ embeds: [embed], components });
+        await channel.send({ embeds: [embed], components });
       }
     } catch (err) {
       console.warn(`[GuildPlayer:${this.guildId}] Could not send now playing card:`, err);
-    }
-  }
-
-  private async resolveChannel(channelId: string): Promise<TextBasedChannel | null> {
-    if (!this.connection) return null;
-    try {
-      const guild = this.connection.joinConfig.guildId;
-      // We'll store a getter or fetch via client
-      return (globalThis as any).kvazarClient?.channels?.cache?.get(channelId) ?? null;
-    } catch {
-      return null;
     }
   }
 
@@ -184,7 +188,8 @@ export class GuildPlayer {
       return false;
     }
     this.loop = false; // Turn off loop on manual skip
-    this.audioPlayer.stop(true);
+    this.current = null;
+    if (!this.audioPlayer.stop(true)) this.playNext();
     return true;
   }
 
@@ -192,11 +197,9 @@ export class GuildPlayer {
     if (!this.current) return false;
 
     if (this.isPaused) {
-      this.audioPlayer.unpause();
-      this.isPaused = false;
+      if (this.audioPlayer.unpause()) this.isPaused = false;
     } else {
-      this.audioPlayer.pause();
-      this.isPaused = true;
+      this.isPaused = this.audioPlayer.pause();
     }
     return this.isPaused;
   }
@@ -213,6 +216,9 @@ export class GuildPlayer {
   destroy(): void {
     const conn = this.connection;
     this.connection = null;
+    this.connectionLifetime?.abort();
+    this.connectionLifetime = null;
+    this.cancelReconnectTimer();
     this.cancelDisconnectTimer();
     this.queue = [];
     this.current = null;
@@ -224,12 +230,19 @@ export class GuildPlayer {
   }
 
   private cleanStreamProcess(): void {
-    if (this.activeStreamProcess) {
-      try {
-        this.activeStreamProcess.kill();
-      } catch {}
-      this.activeStreamProcess = null;
-    }
+    this.cancelPlaybackStartTimer();
+    this.activeStreamProcess?.kill();
+    this.activeStreamProcess = null;
+  }
+
+  private cancelPlaybackStartTimer(): void {
+    if (this.playbackStartTimer) clearTimeout(this.playbackStartTimer);
+    this.playbackStartTimer = null;
+  }
+
+  private cancelReconnectTimer(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
   }
 
   private scheduleDisconnect(): void {
