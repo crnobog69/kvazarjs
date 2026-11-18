@@ -1,5 +1,7 @@
 services:
   kvazar:
+    image: ${KVAZAR_IMAGE:-ghcr.io/crnobog69/kvazarjs:latest}
+    pull_policy: always
     build:
       context: .
       dockerfile: Dockerfile

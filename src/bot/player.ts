@@ -39,6 +39,7 @@ export class GuildPlayer {
     });
 
     this.audioPlayer.on(AudioPlayerStatus.Idle, () => {
+      if (!this.connection) return;
       this.cleanStreamProcess();
       this.playNext().catch((err) => {
         console.error(`[GuildPlayer:${this.guildId}] Error playing next track:`, err);
@@ -46,28 +47,26 @@ export class GuildPlayer {
     });
 
     this.audioPlayer.on('error', (error) => {
+      if (!this.connection) return;
       console.error(`[GuildPlayer:${this.guildId}] Audio player error:`, error.message);
-      this.cleanStreamProcess();
-      this.playNext().catch((err) => {
-        console.error(`[GuildPlayer:${this.guildId}] Recovery error:`, err);
-      });
+      // The player transitions to Idle after a resource error.
+      this.loop = false;
     });
   }
 
-  async ensureConnected(voiceChannel: VoiceBasedChannel): Promise<void> {
+  get channelId() {
+    return this.connection?.joinConfig.channelId;
+  }
+
+  async ensureConnected(voiceChannel: VoiceBasedChannel): Promise<VoiceConnection> {
     this.cancelDisconnectTimer();
 
-    if (
-      this.connection &&
-      this.connection.joinConfig.channelId === voiceChannel.id &&
-      this.connection.state.status === VoiceConnectionStatus.Ready
-    ) {
-      return;
+    if (this.connection && this.channelId === voiceChannel.id) {
+      return await entersState(this.connection, VoiceConnectionStatus.Ready, 20_000);
     }
 
     if (this.connection) {
-      this.connection.destroy();
-      this.connection = null;
+      this.destroy();
     }
 
     const conn = joinVoiceChannel({
@@ -78,10 +77,11 @@ export class GuildPlayer {
       selfMute: false,
     });
 
+    this.connection = conn;
     try {
       await entersState(conn, VoiceConnectionStatus.Ready, 20_000);
+      if (this.connection !== conn) throw new Error('Veza je zatvorena.');
       conn.subscribe(this.audioPlayer);
-      this.connection = conn;
 
       conn.on(VoiceConnectionStatus.Disconnected, async () => {
         try {
@@ -90,17 +90,18 @@ export class GuildPlayer {
             entersState(conn, VoiceConnectionStatus.Connecting, 5_000),
           ]);
         } catch {
-          this.destroy();
+          if (this.connection === conn) this.destroy();
         }
       });
+      return conn;
     } catch (err) {
-      conn.destroy();
-      this.connection = null;
+      if (this.connection === conn) this.destroy();
       throw new Error(`Neuspelo povezivanje na glasovni kanal: ${(err as Error).message}`);
     }
   }
 
-  enqueue(track: Track): number {
+  enqueue(track: Track, connection: VoiceConnection): number {
+    if (this.connection !== connection) throw new Error('Glasovna sesija je završena.');
     this.cancelDisconnectTimer();
     this.queue.push(track);
     const position = this.queue.length;
@@ -200,20 +201,6 @@ export class GuildPlayer {
     return this.isPaused;
   }
 
-  stop(): boolean {
-    const hadTracks = !!this.current || this.queue.length > 0;
-    this.queue = [];
-    this.current = null;
-    this.loop = false;
-    this.isPaused = false;
-
-    this.audioPlayer.stop(true);
-    this.cleanStreamProcess();
-    this.scheduleDisconnect();
-
-    return hadTracks;
-  }
-
   toggleLoop(explicit?: boolean): boolean {
     if (explicit !== undefined) {
       this.loop = explicit && !!this.current;
@@ -224,18 +211,16 @@ export class GuildPlayer {
   }
 
   destroy(): void {
+    const conn = this.connection;
+    this.connection = null;
     this.cancelDisconnectTimer();
-    this.cleanStreamProcess();
     this.queue = [];
     this.current = null;
+    this.loop = false;
+    this.isPaused = false;
     this.audioPlayer.stop(true);
-
-    if (this.connection) {
-      try {
-        this.connection.destroy();
-      } catch {}
-      this.connection = null;
-    }
+    this.cleanStreamProcess();
+    if (conn && conn.state.status !== VoiceConnectionStatus.Destroyed) conn.destroy();
   }
 
   private cleanStreamProcess(): void {

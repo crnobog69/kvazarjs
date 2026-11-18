@@ -67,6 +67,20 @@ export class KvazarBot {
       }
     });
 
+    this.client.on(Events.VoiceStateUpdate, (previous, current) => {
+      if (previous.channelId === current.channelId) return;
+      const player = this.players.get(current.guild.id);
+      if (!player) return;
+      if (current.id === this.client.user?.id && !current.channelId) {
+        if (!player.channelId || player.channelId === previous.channelId) player.destroy();
+        return;
+      }
+      const channel = current.id === this.client.user?.id ? current.channel : previous.channel;
+      if (channel && channel.id === player.channelId && !channel.members.some(member => !member.user.bot)) {
+        player.destroy();
+      }
+    });
+
     this.client.on('interactionCreate', (interaction) => {
       this.handleInteraction(interaction).catch((err) => {
         console.error('Greška pri obradi interakcije:', err);
@@ -139,7 +153,8 @@ export class KvazarBot {
 
     try {
       const player = this.getPlayer(interaction.guildId);
-      await player.ensureConnected(voiceChannel);
+      if (member.voice.channelId !== voiceChannel.id) throw new Error('Напустио си гласовни канал.');
+      const connection = await player.ensureConnected(voiceChannel);
 
       const track = await this.resolver.resolve(
         query,
@@ -147,7 +162,7 @@ export class KvazarBot {
         interaction.channelId
       );
 
-      const position = player.enqueue(track);
+      const position = player.enqueue(track, connection);
       const embed = buildQueuedEmbed(track, position);
 
       await interaction.editReply({
@@ -202,7 +217,7 @@ export class KvazarBot {
 
   private async handleStop(interaction: any): Promise<void> {
     const player = this.players.get(interaction.guildId);
-    if (!player || (!player.current && player.queue.length === 0)) {
+    if (!player?.channelId) {
       await interaction.reply({
         content: 'Нема ничега за заустављање.',
         flags: MessageFlags.Ephemeral,
@@ -210,7 +225,7 @@ export class KvazarBot {
       return;
     }
 
-    player.stop();
+    player.destroy();
     await interaction.reply({
       content: '⏹️ Репродукција заустављена и ред испражњен.',
     });
@@ -272,7 +287,7 @@ export class KvazarBot {
         break;
       }
       case 'stop_button': {
-        player.stop();
+        player.destroy();
         await interaction.followUp({
           content: '⏹️ Репродукција заустављена и ред испражњен.',
           flags: MessageFlags.Ephemeral,

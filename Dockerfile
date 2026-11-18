@@ -10,11 +10,11 @@ RUN apk add --no-cache \
 WORKDIR /app
 
 # Copy package manifests and install dependencies
-COPY package.json bun.lock* ./
-RUN bun install --frozen-lockfile || bun install
+COPY package.json bun.lock ./
+RUN bun install --production --frozen-lockfile
 
 # Copy source code
-COPY . .
+COPY src ./src
 
 # Run as non-root
 USER bun

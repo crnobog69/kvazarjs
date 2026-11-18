@@ -1,4 +1,10 @@
 # Git
+.env
+.env.*
+.gitea
+.github
+node_modules
+docker-build.*
 .git
 .gitignore
 
