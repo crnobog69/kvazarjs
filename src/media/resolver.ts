@@ -14,6 +14,8 @@ const MAX_OUTPUT_LENGTH = 2 * 1024 * 1024;
 const MAX_CONCURRENT_LOOKUPS = 4;
 const CACHE_SIZE = 100;
 const CACHE_TTL_MS = 10 * 60_000;
+const AUDIO_FORMATS = ['bestaudio[ext=m4a]', 'bestaudio[ext=webm]', 'bestaudio', 'best'];
+const FORMAT_SELECTOR = AUDIO_FORMATS.join('/');
 const ALTERNATE_VERSIONS = [
   'cover', 'karaoke', 'instrumental', 'remix', 'mix', 'dub', 'live',
   'reaction', 'tutorial', 'slowed', 'sped', 'nightcore',
@@ -71,6 +73,34 @@ export class Resolver {
   constructor(options?: ResolverOptions) {
     this.executable = options?.executable || process.env.KVZ_YTDLP_PATH || 'yt-dlp';
     this.timeoutMs = options?.timeoutMs ?? 25_000;
+  }
+
+  async refreshForPlayback(track: Track, signal: AbortSignal): Promise<Track> {
+    const url = httpUrl(track.webUrl);
+    if (!url) throw new Error('Недостаје адреса песме за поновни покушај.');
+    if (this.activeLookups >= MAX_CONCURRENT_LOOKUPS) {
+      throw new Error('Превише активних претрага.');
+    }
+
+    const formatId = track.formatId;
+    const selector = formatId && /^[\w.-]+$/.test(formatId)
+      ? [...AUDIO_FORMATS.map(format => `${format}[format_id!="${formatId}"]`), FORMAT_SELECTOR].join('/')
+      : FORMAT_SELECTOR;
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(this.timeoutMs)]);
+    this.activeLookups++;
+    try {
+      const refreshed = await this.getTrack(url, track.requestedBy, track.requestChannelId, deadline, [
+        '--check-formats', '-f', selector,
+      ]);
+      return {
+        ...track,
+        streamUrl: refreshed.streamUrl,
+        formatId: refreshed.formatId,
+        httpHeaders: refreshed.httpHeaders,
+      };
+    } finally {
+      this.activeLookups--;
+    }
   }
 
   async resolve(query: string, requestedBy: string, channelId: string, signal?: AbortSignal): Promise<Track> {
@@ -144,10 +174,14 @@ export class Resolver {
     this.matches.set(query, match);
   }
 
-  private async getTrack(url: string, requestedBy: string, channelId: string, signal: AbortSignal): Promise<Track> {
-    const [entry] = await this.extract(
-      url, ['-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'], signal
-    );
+  private async getTrack(
+    url: string,
+    requestedBy: string,
+    channelId: string,
+    signal: AbortSignal,
+    options = ['-f', FORMAT_SELECTOR],
+  ): Promise<Track> {
+    const [entry] = await this.extract(url, options, signal);
     const streamUrl = httpUrl(entry?.url);
     if (!entry || !streamUrl) throw new Error('За овај резултат нема доступног аудио стрима.');
 
@@ -163,6 +197,7 @@ export class Resolver {
       author: asText(entry.artist || entry.uploader || entry.channel) || 'Непознат аутор',
       webUrl: httpUrl(entry.webpage_url) ?? url,
       streamUrl,
+      formatId: asText(entry.format_id) || undefined,
       thumbnail: httpUrl(entry.thumbnail),
       duration: typeof entry.duration === 'number' ? entry.duration : 0,
       source,

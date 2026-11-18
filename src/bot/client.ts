@@ -90,7 +90,7 @@ export class KvazarBot {
   private getPlayer(guildId: string): GuildPlayer {
     let player = this.players.get(guildId);
     if (!player) {
-      player = new GuildPlayer(guildId, this.client, this.config.ffmpegPath);
+      player = new GuildPlayer(guildId, this.client, this.resolver, this.config.ffmpegPath);
       this.players.set(guildId, player);
     }
     return player;

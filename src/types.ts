@@ -6,6 +6,7 @@ export interface Track {
   author: string;
   webUrl: string;
   streamUrl: string;
+  formatId?: string;
   thumbnail?: string;
   duration: number; // in seconds
   source: Source;

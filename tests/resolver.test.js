@@ -53,3 +53,25 @@ test('SoundCloud queries prefer the requested version and direct URLs go straigh
   expect((await resolver.resolve(original, '', '')).webUrl).toBe(original);
   expect(extract.mock.calls.map(([input]) => input)).toEqual(['scsearch5:pesma remix', remix, remix, original]);
 });
+
+test('a refused stream is refreshed from the same video and checks formats before selecting one', async () => {
+  const resolver = new Resolver();
+  const fresh = { ...details(official), format_id: '251', http_headers: { 'User-Agent': 'fresh' } };
+  const extract = spyOn(resolver, 'extract').mockResolvedValue([fresh]);
+  const track = {
+    title: 'Requested video',
+    webUrl: official,
+    streamUrl: 'https://audio.example.test/old',
+    formatId: '140',
+    queuedAt: new Date(0),
+  };
+
+  const recovered = await resolver.refreshForPlayback(track, new AbortController().signal);
+  const [[input, flags]] = extract.mock.calls;
+  expect(input).toBe(official);
+  expect(flags).toContain('--check-formats');
+  expect(flags.at(-1)).toStartWith('bestaudio[ext=m4a][format_id!="140"]/');
+  expect(recovered).toEqual({
+    ...track, streamUrl: fresh.url, formatId: '251', httpHeaders: fresh.http_headers,
+  });
+});

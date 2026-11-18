@@ -123,3 +123,61 @@ test('/play starts lookup while Discord voice is still connecting', async () => 
     await bot.stop();
   }
 });
+
+function rejectAudioStream(player) {
+  const resource = { playbackDuration: 0 };
+  player.audioPlayer.emit('error', Object.assign(new Error('FFmpeg received HTTP 403'), { resource }));
+  player.audioPlayer.emit(AudioPlayerStatus.Idle, { status: AudioPlayerStatus.Buffering, resource });
+}
+
+test('FFmpeg 403 retries the current song once and then advances the queue', async () => {
+  const bot = new KvazarBot({ token: 'unused' });
+  const player = bot.getPlayer('guild');
+  const connection = { state: { status: 'ready' }, destroy() {} };
+  player.connection = connection;
+  const song = { title: 'Track', webUrl: 'https://www.youtube.com/watch?v=original123' };
+  const fresh = { ...song, streamUrl: 'https://audio.example.test/new' };
+  const queued = { title: 'Next track' };
+  const startStream = spyOn(player, 'startStream').mockImplementation(() => {});
+  const refresh = spyOn(bot.resolver, 'refreshForPlayback').mockResolvedValue(fresh);
+
+  try {
+    player.enqueue(song, connection);
+    rejectAudioStream(player);
+    player.enqueue(queued, connection);
+    expect(player.queue).toEqual([queued]);
+    await Promise.resolve();
+    expect(startStream.mock.calls.map(([track]) => track)).toEqual([song, fresh]);
+
+    rejectAudioStream(player);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(player.current).toBe(queued);
+  } finally {
+    await bot.stop();
+  }
+});
+
+test('/skip cancels lookups for a track denied by FFmpeg', async () => {
+  const bot = new KvazarBot({ token: 'unused' });
+  const player = bot.getPlayer('guild');
+  const connection = { state: { status: 'ready' }, destroy() {} };
+  player.connection = connection;
+  const song = { title: 'Track', webUrl: 'https://www.youtube.com/watch?v=original123' };
+  const queued = { title: 'Next track' };
+  const retry = Promise.withResolvers();
+  const startStream = spyOn(player, 'startStream').mockImplementation(() => {});
+  const refresh = spyOn(bot.resolver, 'refreshForPlayback').mockReturnValue(retry.promise);
+
+  try {
+    player.enqueue(song, connection);
+    rejectAudioStream(player);
+    player.enqueue(queued, connection);
+    player.skip();
+    expect(refresh.mock.calls[0][1].aborted).toBe(true);
+    retry.resolve(song);
+    await Promise.resolve();
+    expect(startStream.mock.calls.map(([track]) => track)).toEqual([song, queued]);
+  } finally {
+    await bot.stop();
+  }
+});

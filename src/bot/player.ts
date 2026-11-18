@@ -10,6 +10,7 @@ import {
 } from '@discordjs/voice';
 import type { Client, VoiceBasedChannel } from 'discord.js';
 import type { ChildProcess } from 'node:child_process';
+import type { Resolver } from '../media/resolver';
 import { createStream } from '../media/stream';
 import type { Track } from '../types';
 import { buildControlRow, buildNowPlayingEmbed } from './ui';
@@ -32,8 +33,15 @@ export class GuildPlayer {
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private playbackStartTimer: ReturnType<typeof setTimeout> | null = null;
+  private streamRetry: AbortController | null = null;
+  private retriedCurrent = false;
 
-  constructor(guildId: string, private readonly client: Client, private readonly ffmpegPath?: string) {
+  constructor(
+    guildId: string,
+    private readonly client: Client,
+    private readonly resolver: Resolver,
+    private readonly ffmpegPath?: string,
+  ) {
     this.guildId = guildId;
 
     this.audioPlayer = createAudioPlayer({
@@ -44,7 +52,7 @@ export class GuildPlayer {
 
     this.audioPlayer.on(AudioPlayerStatus.Idle, (previous) => {
       this.cleanStreamProcess();
-      if (!this.connection) return;
+      if (!this.connection || this.streamRetry) return;
       if (previous.status !== AudioPlayerStatus.Idle && previous.resource.playbackDuration === 0) {
         this.failCurrent(new Error('FFmpeg finished before producing audio'));
       }
@@ -58,7 +66,17 @@ export class GuildPlayer {
       }
     });
 
-    this.audioPlayer.on('error', (error) => this.failCurrent(error));
+    this.audioPlayer.on('error', (error) => {
+      if (this.current?.webUrl && !this.retriedCurrent && error.resource.playbackDuration === 0
+        && error.message === 'FFmpeg received HTTP 403') {
+        const retry = new AbortController();
+        this.streamRetry = retry;
+        this.retriedCurrent = true;
+        void this.retryStream(this.current, retry);
+        return;
+      }
+      this.failCurrent(error);
+    });
   }
 
   get channelId() {
@@ -119,7 +137,7 @@ export class GuildPlayer {
     this.queue.push(track);
     const position = this.queue.length;
 
-    if (this.audioPlayer.state.status === AudioPlayerStatus.Idle) this.playNext();
+    if (this.audioPlayer.state.status === AudioPlayerStatus.Idle && !this.streamRetry) this.playNext();
 
     return position;
   }
@@ -129,20 +147,12 @@ export class GuildPlayer {
     if (this.loop && this.current) this.queue.push(this.current);
     this.current = null;
     this.isPaused = false;
+    this.retriedCurrent = false;
 
     for (let track = this.queue.shift(); track; track = this.queue.shift()) {
       this.current = track;
       try {
-        const stream = createStream(track, this.ffmpegPath);
-        this.activeStreamProcess = stream.process;
-        this.audioPlayer.play(stream.resource);
-        if (this.audioPlayer.state.status === AudioPlayerStatus.Buffering) {
-          this.playbackStartTimer = setTimeout(() => {
-            if (this.activeStreamProcess !== stream.process) return;
-            this.failCurrent(new Error('Timed out while waiting for the first audio'));
-            this.audioPlayer.stop(true);
-          }, PLAYBACK_START_TIMEOUT_MS);
-        }
+        this.startStream(track);
         return;
       } catch (error) {
         this.failCurrent(error);
@@ -150,6 +160,36 @@ export class GuildPlayer {
       }
     }
     this.scheduleDisconnect();
+  }
+
+  private startStream(track: Track): void {
+    const stream = createStream(track, this.ffmpegPath);
+    this.activeStreamProcess = stream.process;
+    this.audioPlayer.play(stream.resource);
+    if (this.audioPlayer.state.status === AudioPlayerStatus.Buffering) {
+      this.playbackStartTimer = setTimeout(() => {
+        if (this.activeStreamProcess !== stream.process) return;
+        this.failCurrent(new Error('Timed out while waiting for the first audio'));
+        this.audioPlayer.stop(true);
+      }, PLAYBACK_START_TIMEOUT_MS);
+    }
+  }
+
+  private async retryStream(track: Track, retry: AbortController): Promise<void> {
+    console.warn(`[GuildPlayer:${this.guildId}] Stream returned HTTP 403. Checking other formats.`);
+    try {
+      const refreshed = await this.resolver.refreshForPlayback(track, retry.signal);
+      if (retry.signal.aborted) return;
+      this.streamRetry = null;
+      this.current = refreshed;
+      this.startStream(refreshed);
+    } catch (error) {
+      if (retry.signal.aborted) return;
+      this.streamRetry = null;
+      this.failCurrent(error);
+      this.cleanStreamProcess();
+      this.playNext();
+    }
   }
 
   private failCurrent(error: unknown): void {
@@ -188,6 +228,7 @@ export class GuildPlayer {
       return false;
     }
     this.loop = false; // Turn off loop on manual skip
+    this.cancelStreamRetry();
     this.current = null;
     if (!this.audioPlayer.stop(true)) this.playNext();
     return true;
@@ -218,6 +259,7 @@ export class GuildPlayer {
     this.connection = null;
     this.connectionLifetime?.abort();
     this.connectionLifetime = null;
+    this.cancelStreamRetry();
     this.cancelReconnectTimer();
     this.cancelDisconnectTimer();
     this.queue = [];
@@ -233,6 +275,11 @@ export class GuildPlayer {
     this.cancelPlaybackStartTimer();
     this.activeStreamProcess?.kill();
     this.activeStreamProcess = null;
+  }
+
+  private cancelStreamRetry(): void {
+    this.streamRetry?.abort();
+    this.streamRetry = null;
   }
 
   private cancelPlaybackStartTimer(): void {
