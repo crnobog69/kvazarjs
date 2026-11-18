@@ -1,6 +1,6 @@
 services:
   kvazar:
-    image: ${KVAZAR_IMAGE:-ghcr.io/crnobog69/kvazarjs:latest}
+    image: ghcr.io/crnobog69/kvazarjs:latest
     pull_policy: always
     build:
       context: .
